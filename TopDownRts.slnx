@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Rts.Auth/Rts.Auth.csproj" />
+    <Project Path="src/Rts.Domain/Rts.Domain.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Rts.Auth.Tests/Rts.Auth.Tests.csproj" />
+    <Project Path="tests/Rts.Domain.Tests/Rts.Domain.Tests.csproj" />
+  </Folder>
+</Solution>
