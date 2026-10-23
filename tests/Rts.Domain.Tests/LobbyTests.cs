@@ -3,14 +3,7 @@ namespace Rts.Domain.Tests;
 /// <summary>Числа лобби — свой конфиг (дефолты завтрашних правок не трогают тесты).</summary>
 internal static class TestBalance
 {
-    public static readonly BalanceConfig Balance = new()
-    {
-        ReadyTimeout = TimeSpan.FromSeconds(30),
-        BaseDamagePerTick = 10,
-        ShieldAbsorbsPerTick = 6,
-        RatingWinPoints = 15,
-        RatingLosePoints = 10,
-    };
+    public static readonly BalanceConfig Balance = new(TimeSpan.FromSeconds(30), 10, 6, 15, 10);
 }
 
 internal static class TestDomain
