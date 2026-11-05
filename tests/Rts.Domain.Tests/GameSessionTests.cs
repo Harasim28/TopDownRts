@@ -164,4 +164,368 @@ public class GameSessionTests
         Assert.Equal(new ShipPosition(1620, 0), movement.PositionOf(key));
         Assert.False(movement.IsMoving(key));
     }
+
+    // ---- Полный игровой ход 2v2 (кадры 1 + 3 + 4 + 5): через IGameSession ----
+
+    private static GameSessionService NewSession(HostRuleSet? rules = null, MovementConfig? movement = null)
+    {
+        var rooms = new RoomService();
+        var created = rooms.CreateRoom(P1);
+        rooms.Join(created.Room.Id, P2);
+        rooms.Join(created.Room.Id, P3);
+        rooms.Join(created.Room.Id, P4);
+        return GameSessionService.StartFromRoom(rooms, created.Room.Id, rules ?? HostRuleSet.Default(), movement: movement);
+    }
+
+    private static ShipUnit[] Ships(string prefix, string @class, int count) =>
+        Enumerable.Range(0, count).Select(i => Ship($"{prefix}{i}", @class)).ToArray();
+
+    private static ShipUnit Ship(string id, string @class)
+    {
+        var profile = TestBalance.Balance.ShipClasses.TryGetValue(@class, out var known)
+            ? known
+            : TestBalance.Balance.UnknownClassProfile;
+        return new ShipUnit(new ShipId(id), @class, profile.Hull, profile.Shield);
+    }
+
+    private static void TickSeconds(GameSessionService session, int ticks, double seconds = 1)
+    {
+        for (var i = 0; i < ticks; i++) session.Tick(TimeSpan.FromSeconds(seconds));
+    }
+
+    private static void TickUntil(GameSessionService session, Func<bool> done, int maxTicks = 40)
+    {
+        for (var i = 0; i < maxTicks && !done(); i++) session.Tick(TimeSpan.FromSeconds(1));
+        Assert.True(done(), $"условие не выполнилось за {maxTicks} тиков по 1 с");
+    }
+
+    private static SessionShipState ShipState(GameSessionState state, PlayerId player) =>
+        state.Ships.First(s => s.Player == player);
+
+    private static SessionBaseState BaseState(GameSessionState state, BaseId baseId) =>
+        state.Bases.Single(b => b.Base == baseId);
+
+    private static ShipId S(string id) => new(id);
+
+    [Fact]
+    public void Полный_ход_от_комнаты_до_MatchStarted_спавнит_восемь_кораблей_у_домашних_баз()
+    {
+        var session = NewSession();
+
+        // закуп и подтверждение: пара лэйна стартует на втором подтверждении
+        session.SetFleet(P1, Ships("a", "scout", 2));
+        Assert.Null(session.ConfirmFleet(P1));
+        session.SetFleet(P3, Ships("b", "scout", 2));
+        Assert.NotNull(session.ConfirmFleet(P3)); // первый MatchStarted и спавн лэйна 1
+
+        session.SetFleet(P2, Ships("a2", "scout", 2));
+        Assert.Null(session.ConfirmFleet(P2));
+        session.SetFleet(P4, Ships("b2", "scout", 2));
+        Assert.NotNull(session.ConfirmFleet(P4)); // второй MatchStarted и спавн лэйна 2
+
+        var state = session.GetState();
+        Assert.Equal(8, state.Ships.Count);
+        foreach (var ship in state.Ships)
+        {
+            var homeSide = ship.Team == TeamA ? Cfg.BasePoints[BaseId.HomeA] : Cfg.BasePoints[BaseId.HomeB];
+            Assert.True(ship.Position.DistanceTo(homeSide) <= Cfg.BaseZoneRadius,
+                "корабли спавнятся в зоне своей домашней базы");
+        }
+
+        // лобби-фаза прошла честно: оба матча собраны и в BothReady
+        Assert.Equal(ReadyState.BothReady, session.Lobby.TryGetMatch(P1)!.State);
+        Assert.Equal(ReadyState.BothReady, session.Lobby.TryGetMatch(P4)!.State);
+    }
+
+    [Fact]
+    public void Сессия_делит_четырёх_участников_пополам_по_порядку_и_сводит_лэйны_крест_накрест()
+    {
+        var session = NewSession();
+
+        Assert.Equal(new[] { P1, P2 }, session.TeamAPlayers);
+        Assert.Equal(new[] { P3, P4 }, session.TeamBPlayers);
+
+        var lane1 = session.Lobby.TryGetMatch(P1)!; // спаривание крест-накрест: A(0)↔B(0), A(1)↔B(1)
+        var lane2 = session.Lobby.TryGetMatch(P2)!;
+        Assert.Equal(P3, lane1.B);
+        Assert.Equal(P4, lane2.B);
+    }
+
+    [Fact]
+    public void До_подтверждения_флотов_сессия_не_спавнит_корабли_и_тики_делают_ничего()
+    {
+        var session = NewSession();
+        session.SetFleet(P1, Ships("a", "scout", 1));
+        Assert.Null(session.ConfirmFleet(P1)); // второй игрок лэйна не подтвердил
+
+        TickSeconds(session, 5);
+        for (var i = 0; i < 3; i++) session.Tick(TimeSpan.FromSeconds(1));
+
+        var state = session.GetState();
+        Assert.Empty(state.Ships);
+        Assert.False(state.BattleStarted);
+        Assert.Equal(SessionOutcome.None, session.Outcome);
+        Assert.False(session.IsOver);
+    }
+
+    [Fact]
+    public void Скаут_сессии_доезжает_до_центра_за_расчётное_время_и_захватывает_базу()
+    {
+        var session = NewSession();
+        foreach (var player in new[] { P1, P2, P3, P4 })
+        {
+            session.SetFleet(player, [Ship($"{player.Value}-s", "scout")]);
+        }
+
+        foreach (var player in new[] { P1, P2, P3, P4 }) session.ConfirmFleet(player);
+        TickSeconds(session, 2);
+
+        session.SetPath(P1, S("p1-s"), [new Waypoint(Cfg.BasePoints[BaseId.Central])]);
+        TickUntil(session, () => ShipState(session.GetState(), P1).Position == Cfg.BasePoints[BaseId.Central]);
+
+        // противник у себя дома (тоже доезжает и стоит) — боя на таком раздорожье нет (WeaponRange)
+        var central = BaseState(session.GetState(), BaseId.Central);
+        Assert.Null(central.Owner);
+
+        // захват виден в моменте: кто копит и сколько накопил; владение переходит к A
+        Team? capturingSeen = TeamB; // заведомо не совпадёт с «копирующим»
+        TickUntil(session, () =>
+        {
+            var baseState = BaseState(session.GetState(), BaseId.Central);
+            if (baseState.Owner == TeamA) return true;
+            capturingSeen = baseState.Capturing;
+            if (baseState.Capturing == TeamA)
+            {
+                Assert.True(baseState.CaptureProgressSeconds > 0, "прогресс захвата растёт с присутствием");
+            }
+
+            return false;
+        }, 40);
+        Assert.Equal(TeamA, capturingSeen); // захват вёлся командой A
+        var captured = BaseState(session.GetState(), BaseId.Central);
+        Assert.Null(captured.Capturing); // база наша — никто больше не копит
+
+        // враг никуда не доехал: стоял в своей зоне всё время
+        Assert.True(ShipState(session.GetState(), P3).Position.DistanceTo(Cfg.BasePoints[BaseId.HomeB])
+                    <= Cfg.BaseZoneRadius);
+    }
+
+    [Fact]
+    public void Поочерёдный_захват_всех_баз_даёт_победу_по_таймеру_удержания()
+    {
+        var rules = new HostRuleSet(holdAllBasesMinutes: 2, victoryScoreThreshold: 2000); // дефолты сценария
+        var session = NewSession(rules);
+        foreach (var player in new[] { P1, P2 })
+        {
+            session.SetFleet(player, Ships(player.Value, "scout", 2));
+        }
+
+        foreach (var player in new[] { P3, P4 })
+        {
+            session.SetFleet(player, Ships(player.Value, "scout", 1));
+        }
+
+        foreach (var player in new[] { P1, P2, P3, P4 }) session.ConfirmFleet(player);
+        TickSeconds(session, 2);
+
+        // сторона B уходит из своей зоны и стоит за пределами дальности боя
+        foreach (var player in new[] { P3, P4 })
+        {
+            session.SetPath(player, S($"{player.Value}0"), [new Waypoint(new ShipPosition(1600, 1400))]);
+        }
+
+        // сторона A идёт захватывать центр: сначала туда — это первый поочерёдный шаг
+        foreach (var player in new[] { P1, P2 })
+        {
+            foreach (var ship in session.GetState().Ships.Where(s => s.Player == player))
+            {
+                session.SetPath(player, ship.Ship, [new Waypoint(Cfg.BasePoints[BaseId.Central])]);
+            }
+        }
+
+        TickUntil(session, () => BaseState(session.GetState(), BaseId.Central).Owner == TeamA);
+
+        // поочерёдный захват: за центром — чужой дом
+        foreach (var player in new[] { P1, P2 })
+        {
+            foreach (var ship in session.GetState().Ships.Where(s => s.Player == player))
+            {
+                session.SetPath(player, ship.Ship, [new Waypoint(Cfg.BasePoints[BaseId.HomeB])]);
+            }
+        }
+
+        TickUntil(session, () => BaseState(session.GetState(), BaseId.HomeB).Owner == TeamA, 60);
+
+        TickUntil(session, () => session.IsOver, 220);
+        Assert.Equal(SessionOutcome.TeamAWon, session.Outcome);
+        Assert.Equal(TeamA, session.Winner);
+
+        var state = session.GetState();
+        Assert.True(state.HoldAllSecondsTeamA >= rules.HoldAllBasesMinutes * 60,
+            "победа по таймеру владения всеми тремя базами");
+        Assert.True(state.ScoreTeamA < rules.VictoryScoreThreshold, "победа не по очкам: порог не набран");
+
+        // сторона B жива — исход решён базами, а не уничтожением
+        Assert.True(state.Ships.Where(s => s.Player == P3 || s.Player == P4).All(s => s.Alive));
+    }
+
+    [Fact]
+    public void Уничтожение_обеих_пар_противника_даёт_победу_A_и_рейтинг_плюс15_минус10()
+    {
+        var session = NewSession();
+        foreach (var player in new[] { P1, P2, P3, P4 })
+        {
+            session.SetFleet(player, [Ship($"{player.Value}-s", "scout")]);
+            session.ConfirmFleet(player);
+        }
+
+        // пути заказываем после спавна: корабли известны сессии после MatchStarted лэйна
+        foreach (var player in new[] { P1, P2, P3, P4 })
+        {
+            session.SetPath(player, S($"{player.Value}-s"), [new Waypoint(Cfg.BasePoints[BaseId.Central])]);
+        }
+
+        TickUntil(session, () => session.IsOver, 30);
+        Assert.Equal(SessionOutcome.TeamAWon, session.Outcome);
+        Assert.Equal(TeamA, session.Winner);
+
+        var state = session.GetState();
+        Assert.True(state.Ships.Where(s => s.Player == P3 || s.Player == P4).All(s => !s.Alive), "флоты B уничтожены");
+        Assert.True(state.Ships.Where(s => s.Player == P1 || s.Player == P2).Any(s => s.Alive), "у A остались корабли");
+
+        // рейтинг «как есть»: у каждого игрока ровно одна запись (±15/−10, победа/поражение)
+        var balance = TestBalance.Balance;
+        foreach (var winner in new[] { P1, P2 })
+        {
+            var rating = session.Ratings.GetOrCreate(winner);
+            Assert.Equal(balance.RatingWinPoints, rating.Points);
+            Assert.Equal(1, rating.Wins);
+            Assert.Equal(0, rating.Losses);
+        }
+
+        foreach (var loser in new[] { P3, P4 })
+        {
+            var rating = session.Ratings.GetOrCreate(loser);
+            Assert.Equal(-balance.RatingLosePoints, rating.Points);
+            Assert.Equal(0, rating.Wins);
+            Assert.Equal(1, rating.Losses);
+        }
+    }
+
+    [Fact]
+    public void После_исхода_сессия_замерзает_и_рейтинг_не_дописывается()
+    {
+        var session = NewSession();
+        foreach (var player in new[] { P1, P2, P3, P4 })
+        {
+            session.SetFleet(player, [Ship($"{player.Value}-s", "scout")]);
+            session.ConfirmFleet(player);
+        }
+
+        foreach (var player in new[] { P1, P2, P3, P4 })
+        {
+            session.SetPath(player, S($"{player.Value}-s"), [new Waypoint(Cfg.BasePoints[BaseId.Central])]);
+        }
+
+        TickUntil(session, () => session.IsOver, 30);
+        Assert.Equal(SessionOutcome.TeamAWon, session.Outcome);
+        var before = SessionSnapshot(session);
+
+        TickSeconds(session, 10);
+
+        // мутирующие команды после исхода запрещены
+        Assert.Throws<InvalidOperationException>(() => session.SetPath(P1, S("p1-s"), []));
+        Assert.Throws<InvalidOperationException>(() => session.SetFleet(P2, [Ship("x", "scout")]));
+        Assert.Throws<InvalidOperationException>(() => session.ConfirmFleet(P2));
+
+        var after = SessionSnapshot(session);
+        Assert.Equal(SessionOutcome.TeamAWon, after.Outcome); // исход не меняется
+        Assert.Equal(before.Outcome, after.Outcome);
+        Assert.Equal<IEnumerable<(ShipId, ShipPosition, double, bool)>>(before.Ships, after.Ships);
+        Assert.Equal<IEnumerable<(BaseId, Team?, Team?, double)>>(before.Bases, after.Bases);
+        Assert.Equal(before.ScoreA, after.ScoreA);
+        Assert.Equal(before.ScoreB, after.ScoreB);
+        Assert.Equal(before.HoldA, after.HoldA);
+        Assert.Equal(before.HoldB, after.HoldB);
+
+        // рейтинг записан однократно, «как есть» (±15/−10)
+        var balance = TestBalance.Balance;
+        Assert.Equal((1, 0), (session.Ratings.GetOrCreate(P1).Wins, session.Ratings.GetOrCreate(P1).Losses));
+        Assert.Equal(balance.RatingWinPoints, session.Ratings.GetOrCreate(P1).Points);
+        Assert.Equal(1, session.Ratings.GetOrCreate(P3).Losses); // запись не продублирована
+        Assert.Equal(-balance.RatingLosePoints, session.Ratings.GetOrCreate(P4).Points);
+    }
+
+    private static (List<(ShipId, ShipPosition, double, bool)> Ships, List<(BaseId, Team?, Team?, double)> Bases,
+        double ScoreA, double ScoreB, double HoldA, double HoldB, SessionOutcome Outcome) SessionSnapshot(
+        GameSessionService session)
+    {
+        var state = session.GetState();
+        return (
+            state.Ships.Select(s => (s.Ship, s.Position, s.Fuel, s.Alive)).ToList(),
+            state.Bases.Select(b => (b.Base, b.Owner, b.Capturing, b.CaptureProgressSeconds)).ToList(),
+            state.ScoreTeamA, state.ScoreTeamB, state.HoldAllSecondsTeamA, state.HoldAllSecondsTeamB, state.Outcome);
+    }
+
+    [Fact]
+    public void GetState_отражает_позиции_топливо_владение_базами_очки_и_hold()
+    {
+        var session = NewSession();
+        foreach (var player in new[] { P1, P2, P3, P4 })
+        {
+            session.SetFleet(player, [Ship($"{player.Value}-s", "scout")]);
+        }
+
+        foreach (var player in new[] { P1, P2, P3, P4 }) session.ConfirmFleet(player);
+        TickSeconds(session, 2);
+
+        session.SetPath(P1, S("p1-s"), [new Waypoint(Cfg.BasePoints[BaseId.Central])]);
+        TickSeconds(session, 5); // скаут в пути к центру (без форсажа)
+
+        var state = session.GetState();
+        var scout = ShipState(state, P1);
+        Assert.True(scout.Position.X > Cfg.BasePoints[BaseId.HomeA].X, "корабль поехал к центру");
+        Assert.True(scout.Fuel > 0, "топливо видно клиенту в [0..ёмкость]");
+        Assert.Equal(Cfg.FuelCapacity, scout.Fuel); // без форсажа расхода нет
+        Assert.True(scout.Alive);
+
+        var homeA = BaseState(state, BaseId.HomeA);
+        Assert.Equal(TeamA, homeA.Owner);
+        Assert.Null(homeA.Capturing);
+        var homeB = BaseState(state, BaseId.HomeB);
+        Assert.Equal(TeamB, homeB.Owner);
+        var central = BaseState(state, BaseId.Central);
+        Assert.Null(central.Owner);
+
+        Assert.True(state.ScoreTeamA > 0, "очки за свой дом тикают");
+        Assert.True(state.ScoreTeamB > 0);
+        Assert.Equal(0, state.HoldAllSecondsTeamA); // всех трёх баз нет — таймер не идёт
+        Assert.False(session.IsOver);
+        Assert.Equal(SessionOutcome.None, state.Outcome);
+    }
+
+    [Fact]
+    public void Перебор_капы_закупа_отклоняется_до_мутаций()
+    {
+        var session = NewSession();
+        var cap = TestBalance.Balance.PurchaseCapPoints;
+        var over = new List<ShipUnit>();
+        var cost = 0;
+        foreach (var (classs, klass) in TestBalance.Balance.ShipClasses.OrderBy(kv => kv.Value.Cost))
+        {
+            while (cost + klass.Cost <= cap)
+            {
+                over.Add(Ship($"{classs}{cost}", classs));
+                cost += klass.Cost;
+            }
+        }
+
+        var cheapest = TestBalance.Balance.ShipClasses.Values.Min(p => p.Cost);
+        over.Add(Ship("overflow", "light")); // ровно на один самый дешёвый сверх капы
+
+        Assert.True(cost + cheapest > cap, "состав собран с перебором капы");
+        Assert.Throws<InvalidOperationException>(() => session.SetFleet(P1, over));
+        Assert.Throws<InvalidOperationException>(() => session.ConfirmFleet(P1)); // состава нет — подтверждать нечего
+    }
 }
+
