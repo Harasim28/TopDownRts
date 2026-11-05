@@ -470,16 +470,22 @@ public sealed class GameSessionService : IGameSession
     }
 
     /// <summary>
-    /// Рейтинг после решённого исхода (победа одной из сторон): по умолчанию — прежняя плоская
-    /// схема IRatingRepository, одна запись на пару победитель↔проигравший (у каждого игрока
-    /// ровно один +15/−10 и один счётчик). При подключённой IRatingPolicy — политика считает
-    /// рейтинги ВСЕХ игроков по составам сторон. Ничья рейтингом не пишется в обоих режимах
-    /// (дефолт «0/0» сохранён; S ничьей остаётся в самой политике, EloConfig.DrawScore).
+    /// Рейтинг после решённого исхода. Победа стороны: по умолчанию — прежняя плоская схема
+    /// IRatingRepository, одна запись на пару победитель↔проигравший (у каждого игрока ровно
+    /// один +15/−10 и один счётчик); при подключённой IRatingPolicy — политика считает рейтинги
+    /// ВСЕХ игроков по составам сторон. Ничья: при подключённой политике — пишется (обе пары
+    /// получают S = EloConfig.DrawScore, дефолт 0.5); плоская схема — как раньше, не пишется.
     /// </summary>
     private void RecordRatings(SessionOutcome outcome)
     {
         if (outcome is not (SessionOutcome.TeamAWon or SessionOutcome.TeamBWon))
         {
+            if (outcome == SessionOutcome.Draw && _policyRatings is not null)
+            {
+                // rated-ничья: обе пары получают S = 0.5 (DrawScore), обновления пишутся
+                _policyRatings.Apply(new RatingGameResult(_teamAPlayers, _teamBPlayers, RatingGameWinner.Draw));
+            }
+
             return;
         }
 
@@ -487,8 +493,10 @@ public sealed class GameSessionService : IGameSession
         var losers = outcome == SessionOutcome.TeamAWon ? _teamBPlayers : _teamAPlayers;
         if (_policyRatings is not null)
         {
+            // политике уходят НАСТОЯЩИЕ стороны (TeamA/TeamB по порядку очередности) и флаг победы —
+            // она сама считает средний рейтинг противников; списки «победители/проигравшие» здесь не годятся
             var winnerSide = outcome == SessionOutcome.TeamAWon ? RatingGameWinner.TeamA : RatingGameWinner.TeamB;
-            _policyRatings.Apply(new RatingGameResult(winners, losers, winnerSide));
+            _policyRatings.Apply(new RatingGameResult(_teamAPlayers, _teamBPlayers, winnerSide));
             return;
         }
 
@@ -516,5 +524,32 @@ public sealed class GameSessionService : IGameSession
         {
             throw new InvalidOperationException("Сессия завершена: команды после исхода не принимаются");
         }
+    }
+
+    /// <summary>
+    /// Concede: капитан — ПЕРВЫЙ из пары своей стороны (по порядку очередности) — сдается, его
+    /// сторона немедленно проигрывает (Finish → рейтинг как при обычном поражении). Не-капитану и
+    /// не-участнику — отказ; после исхода (повторный Concede) — ничего: сессия заморожена.
+    /// </summary>
+    public void Concede(PlayerId player)
+    {
+        if (IsOver)
+        {
+            return; // исход уже есть — повторная сдача ничего не меняет
+        }
+
+        if (!_isTeamAByPlayer.TryGetValue(player, out var isTeamA))
+        {
+            throw new InvalidOperationException($"Игрок {player.Value} не участник этой сессии");
+        }
+
+        var captain = isTeamA ? _teamAPlayers[0] : _teamBPlayers[0];
+        if (player != captain)
+        {
+            throw new InvalidOperationException(
+                $"Сдаться может только капитан — первый из пары ({captain.Value}), а не {player.Value}");
+        }
+
+        Finish(isTeamA ? SessionOutcome.TeamBWon : SessionOutcome.TeamAWon);
     }
 }
