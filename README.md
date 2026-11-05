@@ -1,6 +1,6 @@
 # TopDownRts — каркас игры (заметка «как всё устроено»)
 
-Проект: `~/Study/rts/` (решение `TopDownRts.sln`, .NET 10, C#).
+Проект: `~/Study/rts/` (решение `TopDownRts.sln`, .NET 8, C#).
 Это **каркас** RTS с видом сверху на нескольких кораблей, строящийся по дисциплине курса
 ООАиП: **сначала интерфейсы → затем тесты → затем классы-реализации** (TDD).
 Домен взят из Event Storming-доски «Космические корабли (RTS, 2D)».
@@ -28,10 +28,11 @@ dotnet build         # просто сборка
 | `src/Rts.Domain/LobbyService.cs` | очередь и матчи | двое в очереди → матч; Ready; таймаут → сброс |
 | `src/Rts.Domain/FleetRegistry.cs` | хранение флотов | состав можно менять до подтверждения |
 | `src/Rts.Domain/CombatService.cs` | тактовый бой | урон за тик, щит, гибели, конец боя |
+| `src/Rts.Domain/MatchOrchestrator.cs` | сборка матча в бой | BothReady + оба флота подтверждены → MatchStarted → CombatService.Start |
 | `src/Rts.Domain/RatingRepository.cs` | рейтинг и статистика | +очки победителю, − проигравшему |
 | `src/Rts.Domain/InMemoryDomainFactory.cs` | сборка сервисов | даёт готовый домен тестам |
 | `tests/Rts.Auth.Tests/` | 8 тестов аутентификации | проверка правила 2FA |
-| `tests/Rts.Domain.Tests/` | 16 тестов (лобби 6, бой 6, рейтинг 4) | проверка домена |
+| `tests/Rts.Domain.Tests/` | 23 теста (лобби 6, флоты/бой 6, сборка матча 7, рейтинг 4) | проверка домена |
 
 **Проекты независимы:** `Rts.Auth` знает только свои интерфейсы; `Rts.Domain` — свои.
 Связки появятся на следующем слое (игровой сервис), когда они понадобятся.
@@ -131,7 +132,7 @@ new BalanceConfig
 | 1. Пользователи и меню | комнаты, вход в комнаты | — | ⛔ не начинали (UI/комнаты) |
 | 2. Конструктор правил | пресеты, валидация (P4, P5) | — | ⛔ ждёт подтверждения хотспотов правил |
 | 3a. Сбор матча | QueueJoined→P1→MatchFound, ReadyUp, ReadyTimeout (P2), дуэли (P3) | `LobbyService`: пара→матч, Ready, таймаут-сброс, Decline | ✅ ядро покрыто |
-| 3b. Выбор флота | SelectShips/FleetUpdated, ConfirmFleet (P6 кап 100, P7 старт боя) | `FleetRegistry`: SetFleet/ConfirmFleet — покров до `AllFleetsConfirmed`; капа нет | 🟡 частично (P6 — числа не подтверждены) |
+| 3b. Выбор флота | SelectShips/FleetUpdated, ConfirmFleet (P6 кап 100, P7 старт боя) | `FleetRegistry`: SetFleet/ConfirmFleet; `MatchOrchestrator`: AllFleetsConfirmed (после BothReady) → MatchStarted → бой | ✅ связка 3b→4b покрыта (P6 капа нет) |
 | 4a. Карта | Movement, форсаж, метеориты (P8–P10, P17) | — | ⛔ ждёт подтверждения чисел |
 | 4b. Бой по тикам | DamageApplied (P12), ShieldAbsorbed (P13), ShipDestroyed, FleetWipedOut, BattleEnded (P14), Concede | `CombatService`: тик урона/щита/гибели, `IsOver` | 🟡 ядро есть: нет P11 (попадание от дистанции) и Concede |
 | 5. Итоги | UpdateRating→RatingService **(Эло)** (P15), StatsRecorded (P16) | `RatingRepository`: ±points, счётчики | 🟡 упрощение: НЕ Эло, без «только 1v1-рейтинг» |
@@ -166,7 +167,7 @@ new BalanceConfig
 ## 9. Что дальше (по плану, когда скажешь «го»)
 
 1. Слой сборки матча в бой: `AllFleetsConfirmed → MatchStarted → CombatService.Start`
-   (сшивает 3b и 4b — сейчас это два отдельных сервиса).
+   (сшивает 3b и 4b — сейчас это два отдельных сервиса). — ✅ готово: `MatchOrchestrator`.
 2. Регистрация профилей и хранение (кадр 0: RegisterPlayer → PlayerRegistered).
 3. Метеориты/классы кораблей — после подтверждения чисел владельцем.
 4. Кап флота 100 очков (P6) — как только подтвердят формулу очков за класс.

@@ -10,4 +10,7 @@ public class InMemoryDomainFactory : IDomainFactory
     public ICombatService CreateCombat(BalanceConfig config) => new CombatService(config);
 
     public IRatingRepository CreateRating(BalanceConfig config) => new RatingRepository(config);
+
+    public IMatchOrchestrator CreateOrchestrator(IMatchmakingService lobby, IFleetRegistry fleets, ICombatService combat) =>
+        new MatchOrchestrator(lobby, fleets, combat);
 }

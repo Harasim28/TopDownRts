@@ -146,6 +146,45 @@ public interface ICombatService
     BattleTickResult Tick(Battle battle);
 }
 
+// ---- Сборка матча в бой (кадр 3b → 4b) ----
+
+/// <summary>
+/// Событие старта матча: оба флота подтверждены (AllFleetsConfirmed) после BothReady,
+/// бой собран через ICombatService.Start.
+/// </summary>
+public record MatchStarted(MatchId Match, PlayerId PlayerA, PlayerId PlayerB, Battle Battle);
+
+/// <summary>
+/// Тонкий слой сборки матча в бой: сшивает лобби, реестр флотов и бой.
+/// Когда лобби в BothReady и оба флота подтверждены — стартует бой (MatchStarted).
+/// </summary>
+public interface IMatchOrchestrator
+{
+    /// <summary>Прикрепить матч лобби: слой запоминает его игроков (A и B).</summary>
+    void Attach(Match match);
+
+    /// <summary>Выставить состав флота (делегируется в IFleetRegistry).</summary>
+    void SetFleet(MatchId match, PlayerId player, IReadOnlyList<ShipUnit> ships);
+
+    /// <summary>
+    /// Подтвердить состав (ConfirmFleet, делегируется в IFleetRegistry). Если этим подтверждением
+    /// закрыт последний неподтверждённый флот и лобби в BothReady — матч стартует.
+    /// </summary>
+    MatchStarted? ConfirmFleet(MatchId match, PlayerId player);
+
+    /// <summary>
+    /// Проверить условие старта вручную (AllFleetsConfirmed при BothReady) — например, после
+    /// того как лобби перешло в BothReady, когда флоты уже подтверждены.
+    /// </summary>
+    MatchStarted? TryStartBattle(MatchId match);
+
+    /// <summary>Все ли флоты матча подтверждены (AllFleetsConfirmed).</summary>
+    bool AllFleetsConfirmed(MatchId match);
+
+    /// <summary>Бой матча, если он уже стартовал.</summary>
+    Battle? TryGetBattle(MatchId match);
+}
+
 // ---- Рейтинг и статистика ----
 
 /// <summary>Профиль рейтинга игрока.</summary>
@@ -175,4 +214,5 @@ public interface IDomainFactory
     IFleetRegistry CreateFleetRegistry();
     ICombatService CreateCombat(BalanceConfig config);
     IRatingRepository CreateRating(BalanceConfig config);
+    IMatchOrchestrator CreateOrchestrator(IMatchmakingService lobby, IFleetRegistry fleets, ICombatService combat);
 }
