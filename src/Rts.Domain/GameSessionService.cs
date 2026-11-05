@@ -33,6 +33,7 @@ public sealed class GameSessionService : IGameSession
     private readonly IFleetMovementService _movement;
     private readonly IBaseMap _map;
     private readonly GameSessionTuning _tuning;
+    private readonly IPolicyRatingRepository? _policyRatings; // подключённая политика рейтинга; null — плоская схема
     private readonly List<Lane> _lanes = new();
     private readonly Dictionary<MoveKey, (ShipUnit Ship, PlayerId Player)> _spawned = new();
     private readonly Dictionary<PlayerId, bool> _isTeamAByPlayer = new();
@@ -48,13 +49,17 @@ public sealed class GameSessionService : IGameSession
         BalanceConfig? balance = null,
         MovementConfig? movement = null,
         GameSessionTuning? tuning = null,
-        IDomainFactory? factory = null)
+        IDomainFactory? factory = null,
+        IRatingPolicy? ratingPolicy = null)
     {
         Room = room;
         Rules = rules ?? throw new ArgumentNullException(nameof(rules));
         _tuning = tuning ?? GameSessionTuning.Default();
         balance ??= new BalanceConfig();
         factory ??= new InMemoryDomainFactory();
+        _policyRatings = ratingPolicy is null
+            ? null // дефолт: плоская схема «как есть» (±points из IRatingRepository)
+            : new EloRatingRepository(ratingPolicy);
 
         // дефолт-сплит по порядку: первые двое — команда A, вторые двое — команда B (не подтверждено)
         if (participants is null || participants.Count != 4)
@@ -75,7 +80,7 @@ public sealed class GameSessionService : IGameSession
         }
 
         Lobby = factory.CreateLobby(balance);
-        Ratings = factory.CreateRating(balance);
+        Ratings = _policyRatings ?? factory.CreateRating(balance); // политика? хранилище политики : плоская схема
         _combat = factory.CreateCombat(balance);
         var fleets = factory.CreateFleetRegistry(balance);
         _orchestrator = factory.CreateOrchestrator(Lobby, fleets, _combat);
@@ -90,7 +95,8 @@ public sealed class GameSessionService : IGameSession
         _lanes.Add(BuildLane(TeamAPlayers[1], TeamBPlayers[1]));
     }
 
-    /// <summary>Открыть сессию полного хода по комнате: участники в порядке очередности → 2 A + 2 B.</summary>
+    /// <summary>Открыть сессию полного хода по комнате: участники в порядке очередности → 2 A + 2 B.
+    /// ratingPolicy (по умолчанию null — прежняя плоская схема) выбирает схему рейтинга после исхода.</summary>
     public static GameSessionService StartFromRoom(
         IRoomService rooms,
         RoomId room,
@@ -98,12 +104,13 @@ public sealed class GameSessionService : IGameSession
         BalanceConfig? balance = null,
         MovementConfig? movement = null,
         GameSessionTuning? tuning = null,
-        IDomainFactory? factory = null)
+        IDomainFactory? factory = null,
+        IRatingPolicy? ratingPolicy = null)
     {
         ArgumentNullException.ThrowIfNull(rooms);
         var snapshot = rooms.TryGetRoom(room)
             ?? throw new InvalidOperationException($"Комната {room.Value} не найдена");
-        return new GameSessionService(room, snapshot.Participants, rules, balance, movement, tuning, factory);
+        return new GameSessionService(room, snapshot.Participants, rules, balance, movement, tuning, factory, ratingPolicy);
     }
 
     public RoomId Room { get; }
@@ -385,9 +392,11 @@ public sealed class GameSessionService : IGameSession
     }
 
     /// <summary>
-    /// Рейтинг «как есть» из IRatingRepository: победа команды — одна запись на пару
-    /// (i-й победитель ↔ i-й проигравший), у каждого игрока ровно один +15/−10 и один счётчик.
-    /// Ничья — без записи: у всех 0/0 (дефолт, не подтверждено).
+    /// Рейтинг после решённого исхода (победа одной из сторон): по умолчанию — прежняя плоская
+    /// схема IRatingRepository, одна запись на пару победитель↔проигравший (у каждого игрока
+    /// ровно один +15/−10 и один счётчик). При подключённой IRatingPolicy — политика считает
+    /// рейтинги ВСЕХ игроков по составам сторон. Ничья рейтингом не пишется в обоих режимах
+    /// (дефолт «0/0» сохранён; S ничьей остаётся в самой политике, EloConfig.DrawScore).
     /// </summary>
     private void RecordRatings(SessionOutcome outcome)
     {
@@ -398,6 +407,13 @@ public sealed class GameSessionService : IGameSession
 
         var winners = outcome == SessionOutcome.TeamAWon ? _teamAPlayers : _teamBPlayers;
         var losers = outcome == SessionOutcome.TeamAWon ? _teamBPlayers : _teamAPlayers;
+        if (_policyRatings is not null)
+        {
+            var winnerSide = outcome == SessionOutcome.TeamAWon ? RatingGameWinner.TeamA : RatingGameWinner.TeamB;
+            _policyRatings.Apply(new RatingGameResult(winners, losers, winnerSide));
+            return;
+        }
+
         for (var i = 0; i < Math.Min(winners.Count, losers.Count); i++)
         {
             Ratings.RecordOutcome(new BattleOutcome(winners[i], losers[i]));
