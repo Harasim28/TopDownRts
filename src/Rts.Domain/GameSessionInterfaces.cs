@@ -18,8 +18,8 @@ public enum SessionOutcome
     Draw,
 }
 
-/// <summary>Срез корабля для клиента: кто, где, сколько топлива, жив ли.</summary>
-public record SessionShipState(PlayerId Player, Team Team, ShipId Ship, string Class, ShipPosition Position, double Fuel, bool Alive);
+/// <summary>Срез корабля для клиента: кто, где, сколько топлива и корпуса (HP видно клиенту при лечении), жив ли.</summary>
+public record SessionShipState(PlayerId Player, Team Team, ShipId Ship, string Class, ShipPosition Position, double Fuel, bool Alive, int Hull);
 
 /// <summary>Срез базы для клиента: владелец, кто захватывает и прогресс.</summary>
 public record SessionBaseState(BaseId Base, Team? Owner, Team? Capturing, double CaptureProgressSeconds);

@@ -112,6 +112,17 @@ public sealed class FleetMovementService : IFleetMovementService
 
     public double FuelOf(MoveKey key) => Require(key).Fuel;
 
+    /// <summary>
+    /// Дозаправка вне обычного регена (спец-роль supply): добавляет топливо, но не выше бака
+    /// (FuelCapacity). Вызывается сессией по дельтам политики; дефолт-контур движения её не касается.
+    /// </summary>
+    public void AddFuel(MoveKey key, double amount)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(amount);
+        var unit = Require(key);
+        unit.Fuel = Math.Min(_config.FuelCapacity, unit.Fuel + amount);
+    }
+
     public bool IsMoving(MoveKey key) => Require(key).Path.Count > 0;
 
     private void MoveUnit(Unit unit, double seconds)

@@ -34,6 +34,9 @@ public sealed class GameSessionService : IGameSession
     private readonly IBaseMap _map;
     private readonly GameSessionTuning _tuning;
     private readonly IPolicyRatingRepository? _policyRatings; // подключённая политика рейтинга; null — плоская схема
+    private readonly IClassRolesPolicy? _classRoles;          // спец-роли классов; null — дефолт выключено
+    private readonly FleetMovementService _movementService;   // тот же сервис движения — дозаправка supply
+    private readonly MovementConfig _movementConfig;          // числа движения (бак — в снапшоте аур)
     private readonly List<Lane> _lanes = new();
     private readonly Dictionary<MoveKey, (ShipUnit Ship, PlayerId Player)> _spawned = new();
     private readonly Dictionary<PlayerId, bool> _isTeamAByPlayer = new();
@@ -50,13 +53,15 @@ public sealed class GameSessionService : IGameSession
         MovementConfig? movement = null,
         GameSessionTuning? tuning = null,
         IDomainFactory? factory = null,
-        IRatingPolicy? ratingPolicy = null)
+        IRatingPolicy? ratingPolicy = null,
+        IClassRolesPolicy? classRoles = null)
     {
         Room = room;
         Rules = rules ?? throw new ArgumentNullException(nameof(rules));
         _tuning = tuning ?? GameSessionTuning.Default();
         balance ??= new BalanceConfig();
         factory ??= new InMemoryDomainFactory();
+        _classRoles = classRoles; // спец-роли; null — дефолт выключено
         _policyRatings = ratingPolicy is null
             ? null // дефолт: плоская схема «как есть» (±points из IRatingRepository)
             : new EloRatingRepository(ratingPolicy);
@@ -87,8 +92,16 @@ public sealed class GameSessionService : IGameSession
         _bases = new BaseControlService(Rules);
 
         var movementConfig = movement ?? MovementConfig.Default();
-        _movement = new FleetMovementService(movementConfig);
+        _movementConfig = movementConfig;
+        _movement = _movementService = new FleetMovementService(movementConfig);
         _map = new BattleMap(movementConfig);
+
+        // уклонение scout (спец-роли): политика классов и есть модификатор урона выстрела;
+        // дефолт (спец-роли выключены) — прежнее поведение целиком
+        if (classRoles is IShotDamageModifier evasion && _combat is ICombatShotTuning tunable)
+        {
+            tunable.SetShotModifier(evasion);
+        }
 
         // дефолт-спаривание крест-накрест: очередь лобби соберёт пары A(0)↔B(0), A(1)↔B(1)
         _lanes.Add(BuildLane(TeamAPlayers[0], TeamBPlayers[0]));
@@ -105,12 +118,13 @@ public sealed class GameSessionService : IGameSession
         MovementConfig? movement = null,
         GameSessionTuning? tuning = null,
         IDomainFactory? factory = null,
-        IRatingPolicy? ratingPolicy = null)
+        IRatingPolicy? ratingPolicy = null,
+        IClassRolesPolicy? classRoles = null)
     {
         ArgumentNullException.ThrowIfNull(rooms);
         var snapshot = rooms.TryGetRoom(room)
             ?? throw new InvalidOperationException($"Комната {room.Value} не найдена");
-        return new GameSessionService(room, snapshot.Participants, rules, balance, movement, tuning, factory, ratingPolicy);
+        return new GameSessionService(room, snapshot.Participants, rules, balance, movement, tuning, factory, ratingPolicy, classRoles);
     }
 
     public RoomId Room { get; }
@@ -188,6 +202,10 @@ public sealed class GameSessionService : IGameSession
         // 1) движение всех зарегистрированных кораблей (погибших — пути сняты ниже)
         _movement.Tick(span);
 
+        // 1b) ауры спец-ролей (после движения): лечат/дозаправляют живых союзников —
+        //     только при подключённой политике (дефолт null — шаг ничего не делает)
+        ApplyClassRoles(span);
+
         // 2) присутствие: живые корабли в зонах баз → 3) такт режима (захват/очки/таймер)
         var presence = new List<BasePresence>();
         foreach (var (key, (ship, player)) in _spawned)
@@ -216,6 +234,52 @@ public sealed class GameSessionService : IGameSession
         EvaluateEnd();
     }
 
+    /// <summary>
+    /// Ауры спец-ролей (шаг 1b): снапшот спавненных кораблей после движения → политика считает
+    /// лечение корпуса и дозаправку; эффекты возвращаются в домен (ApplyHeal / AddFuel — вне
+    /// бак-регена MovementConfig, капа по MaxHull/ёмкости бака; мёртвые не поднимаются).
+    /// </summary>
+    private void ApplyClassRoles(TimeSpan span)
+    {
+        if (_classRoles is null)
+        {
+            return; // дефолт: спец-роли выключены — старое поведение целиком
+        }
+
+        var units = _spawned
+            .Select(kv => new ClassRolesUnit(
+                kv.Value.Player,
+                TeamOf(kv.Value.Player),
+                kv.Key.Ship,
+                kv.Value.Ship.Class,
+                _movement.PositionOf(kv.Key),
+                Alive: !kv.Value.Ship.Destroyed,
+                Hull: kv.Value.Ship.Hull,
+                MaxHull: kv.Value.Ship.MaxHull,
+                Fuel: _movement.FuelOf(kv.Key),
+                FuelCapacity: _movementConfig.FuelCapacity))
+            .ToList();
+
+        foreach (var delta in _classRoles.Tick(new ClassRolesTick(span, units)).Applied)
+        {
+            var key = new MoveKey(delta.Player, delta.Ship);
+            if (!_spawned.TryGetValue(key, out var entry))
+            {
+                continue; // рассинхрон снимка — эффекта для такого корабля уже нет
+            }
+
+            if (delta.HullHealed > 0)
+            {
+                entry.Ship.ApplyHeal(delta.HullHealed); // корпус до MaxHull включительно
+            }
+
+            if (delta.FuelAdded > 0)
+            {
+                _movementService.AddFuel(key, delta.FuelAdded); // сверх регена, не выше бака
+            }
+        }
+    }
+
     public GameSessionState GetState()
     {
         var ships = _spawned
@@ -230,7 +294,8 @@ public sealed class GameSessionService : IGameSession
                     ship.Class,
                     _movement.PositionOf(key),
                     _movement.FuelOf(key),
-                    !ship.Destroyed);
+                    !ship.Destroyed,
+                    ship.Hull);
             })
             .ToList();
 

@@ -83,6 +83,18 @@ public record ShipUnit
         Shield -= absorbed;
         Hull -= damage - absorbed;
     }
+
+    /// <summary>Такт лечения (спец-роль support): корпус растёт, но строго до MaxHull; мёртвый не поднимается.</summary>
+    internal void ApplyHeal(int heal)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(heal);
+        if (Destroyed)
+        {
+            return;
+        }
+
+        Hull = Math.Min(MaxHull, Hull + heal);
+    }
 }
 
 /// <summary>Флот игрока в матче.</summary>
