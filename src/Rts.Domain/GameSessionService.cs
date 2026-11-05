@@ -54,7 +54,8 @@ public sealed class GameSessionService : IGameSession
         GameSessionTuning? tuning = null,
         IDomainFactory? factory = null,
         IRatingPolicy? ratingPolicy = null,
-        IClassRolesPolicy? classRoles = null)
+        IClassRolesPolicy? classRoles = null,
+        DamageFalloffConfig? damageFalloff = null)
     {
         Room = room;
         Rules = rules ?? throw new ArgumentNullException(nameof(rules));
@@ -96,11 +97,22 @@ public sealed class GameSessionService : IGameSession
         _movement = _movementService = new FleetMovementService(movementConfig);
         _map = new BattleMap(movementConfig);
 
-        // уклонение scout (спец-роли): политика классов и есть модификатор урона выстрела;
-        // дефолт (спец-роли выключены) — прежнее поведение целиком
-        if (classRoles is IShotDamageModifier evasion && _combat is ICombatShotTuning tunable)
+        // политики урона выстрела (аддитивно): уклонение scout (спец-роли) и P11-спад от дистанции;
+        // ни одной — прежнее поведение целиком
+        if (_combat is ICombatShotTuning tunable)
         {
-            tunable.SetShotModifier(evasion);
+            var shotModifiers = new List<IShotDamageModifier>();
+            if (classRoles is IShotDamageModifier evasion)
+            {
+                shotModifiers.Add(evasion);
+            }
+
+            if (damageFalloff is not null)
+            {
+                shotModifiers.Add(new DamageFalloffPolicy(_movementService.PositionOf, _tuning.WeaponRange, damageFalloff));
+            }
+
+            tunable.SetShotModifier(AggregateShotModifier.Combine(shotModifiers));
         }
 
         // дефолт-спаривание крест-накрест: очередь лобби соберёт пары A(0)↔B(0), A(1)↔B(1)
@@ -119,12 +131,13 @@ public sealed class GameSessionService : IGameSession
         GameSessionTuning? tuning = null,
         IDomainFactory? factory = null,
         IRatingPolicy? ratingPolicy = null,
-        IClassRolesPolicy? classRoles = null)
+        IClassRolesPolicy? classRoles = null,
+        DamageFalloffConfig? damageFalloff = null)
     {
         ArgumentNullException.ThrowIfNull(rooms);
         var snapshot = rooms.TryGetRoom(room)
             ?? throw new InvalidOperationException($"Комната {room.Value} не найдена");
-        return new GameSessionService(room, snapshot.Participants, rules, balance, movement, tuning, factory, ratingPolicy, classRoles);
+        return new GameSessionService(room, snapshot.Participants, rules, balance, movement, tuning, factory, ratingPolicy, classRoles, damageFalloff);
     }
 
     public RoomId Room { get; }
