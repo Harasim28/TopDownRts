@@ -118,18 +118,38 @@ dotnet build         # просто сборка
 ```csharp
 new BalanceConfig
 {
-    ReadyTimeout = TimeSpan.FromSeconds(30), // таймаут лобби
-    BaseDamagePerTick    = 10,               // урон за тик
-    ShieldAbsorbsPerTick = 6,                // сколько урона гасит щит
-    RatingWinPoints  = 15,
-    RatingLosePoints = 10,
+    ReadyTimeout          = TimeSpan.FromSeconds(30), // таймаут лобби
+    BaseDamagePerTick     = 10,                       // урон за тик
+    ShieldAbsorbsPerTick  = 6,                        // сколько урона гасит щит
+    RatingWinPoints       = 15,
+    RatingLosePoints      = 10,
+    // --- кадр 3b: классы кораблей и закупка (фиксация владельца 05.11: 6 классов;
+    //     ЧИСЛА ниже — дефолты, НЕ подтверждено владельцем) ---
+    PurchaseCapPoints     = 100,   // капа закупа НА ИГРОКА (2v2 — по 100 каждому); дефолт созвона 24.09
+    ShipClasses = new()            // Cost / Hull / Shield по классам
+    {
+        ["light"]   = new(5,  50,  20),  // лёгкий
+        ["medium"]  = new(8,  80,  40),  // средний
+        ["heavy"]   = new(12, 150, 80),  // тяжёлый
+        ["support"] = new(10, 70,  50),  // поддержка
+        ["scout"]   = new(4,  30,  10),  // разведка
+        ["supply"]  = new(9,  60,  30),  // снабжение
+    },
+    UnknownClassProfile   = new(10, 100, 50), // профиль для классов ВНЕ словаря (см. правило)
 }
 ```
 
 **Правило:** менять числа = править этот конфиг. Тесты каждый задаёт СВОЙ конфиг,
 поэтому изменения дефолтов не ломают тесты. То же самое касается будущих механик:
-тик боя, радиус/урон метеорита, параметры 4 классов кораблей — всё это заводим
+тик боя, радиус/урон метеорита, параметры 6 классов кораблей — всё это заводим
 в `BalanceConfig`, а не «в код».
+
+**Совместимость классов (важно):** класс корабля — строка (`ShipUnit.Class`). Класс,
+которого НЕТ в `ShipClasses` (например «linac» из старых составов/тестов), не ломается:
+он закупается по `UnknownClassProfile` — дефолтному профилю конфига. Так старые тесты
+и старые составы продолжают работать; когда класс подтвердят владельцем, его просто
+добавляют в `ShipClasses`. Капа (`SetFleet`) считается по одному правилу и для известных,
+и для неизвестных классов — обойти её через неизвестный класс нельзя.
 
 ## 6. Соответствие Event Storming (доска v5, 8 кадров)
 
@@ -139,7 +159,7 @@ new BalanceConfig
 | 1. Пользователи и меню | комнаты, вход в комнаты | — | ⛔ не начинали (UI/комнаты) |
 | 2. Конструктор правил | пресеты, валидация (P4, P5) | — | ⛔ ждёт подтверждения хотспотов правил |
 | 3a. Сбор матча | QueueJoined→P1→MatchFound, ReadyUp, ReadyTimeout (P2), дуэли (P3) | `LobbyService`: пара→матч, Ready, таймаут-сброс, Decline | ✅ ядро покрыто |
-| 3b. Выбор флота | SelectShips/FleetUpdated, ConfirmFleet (P6 кап 100, P7 старт боя) | `FleetRegistry`: SetFleet/ConfirmFleet; `MatchOrchestrator`: AllFleetsConfirmed (после BothReady) → MatchStarted → бой | ✅ связка 3b→4b покрыта (P6 капа нет) |
+| 3b. Выбор флота | SelectShips/FleetUpdated, ConfirmFleet (P6 кап 100, P7 старт боя) | `FleetRegistry`: SetFleet (проверка капы по `PurchaseCapPoints`) / ConfirmFleet; 6 классов (`ShipClassProfile`); `MatchOrchestrator`: AllFleetsConfirmed (после BothReady) → MatchStarted → бой | ✅ связка 3b→4b покрыта, P6 внедрена: классы зафиксированы владельцем 05.11 (6 типов), ЧИСЛА профилей и капа — дефолты, НЕ подтверждено |
 | 4a. Карта | Movement, форсаж, метеориты (P8–P10, P17) | — | ⛔ ждёт подтверждения чисел |
 | 4b. Бой по тикам | DamageApplied (P12), ShieldAbsorbed (P13), ShipDestroyed, FleetWipedOut, BattleEnded (P14), Concede | `CombatService`: тик урона/щита/гибели, `IsOver` | 🟡 ядро есть: нет P11 (попадание от дистанции) и Concede |
 | 5. Итоги | UpdateRating→RatingService **(Эло)** (P15), StatsRecorded (P16) | `RatingRepository`: ±points, счётчики | 🟡 упрощение: НЕ Эло, без «только 1v1-рейтинг» |

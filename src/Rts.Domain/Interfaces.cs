@@ -104,6 +104,13 @@ public interface IFleetRegistry
     Fleet? TryGetFleet(MatchId match, PlayerId player);
 }
 
+/// <summary>
+/// Профиль класса корабля (кадр 3b, закупка): стоимость в очках капы + корпус и щит корабля класса.
+/// Владелец зафиксировал ШЕСТЬ классов (05.11): light, medium, heavy, support, scout, supply —
+/// спец-роли (поддержка/снабжение/разведка) в бою НЕ внедрены, класс задаёт ТОЛЬКО профиль закупа.
+/// </summary>
+public sealed record ShipClassProfile(int Cost, int Hull, int Shield);
+
 // ---- Баланс (все спорные числа — за одним конфигом, завтрашние правки меняют его) ----
 
 /// <summary>Числа баланса, вынесенные из доски: правки владельца — правка этой записи.</summary>
@@ -123,6 +130,35 @@ public record BalanceConfig
 
     /// <summary>Очки за поражение (минус).</summary>
     public int RatingLosePoints { get; init; } = 10;
+
+    /// <summary>
+    /// Капа закупа флота, очков НА ИГРОКА (кадр 3b, P6; 2v2 — по 100 каждому).
+    /// Дефолт с созвона 24.09 — НЕ подтверждено владельцем.
+    /// </summary>
+    public int PurchaseCapPoints { get; init; } = 100;
+
+    /// <summary>
+    /// Спецификация классов: класс-строка ShipUnit → профиль закупа. Шесть фиксированных классов
+    /// (фиксация владельца 05.11): light/medium/heavy/support/scout/supply. Класс ВНЕ словаря
+    /// (например «linac» из старых составов) закупается по UnknownClassProfile (обратная совместимость).
+    /// Числа профилей — дефолт, НЕ подтверждено владельцем.
+    /// </summary>
+    public IReadOnlyDictionary<string, ShipClassProfile> ShipClasses { get; init; } = DefaultShipClasses;
+
+    /// <summary>Профиль для классов ВНЕ ShipClasses (обратная совместимость): дефолт, НЕ подтверждено владельцем.</summary>
+    public ShipClassProfile UnknownClassProfile { get; init; } = new(Cost: 10, Hull: 100, Shield: 50);
+
+    /// <summary>Шесть классов (фиксация владельца 05.11); числа — дефолт, НЕ подтверждено владельцем.</summary>
+    public static IReadOnlyDictionary<string, ShipClassProfile> DefaultShipClasses { get; } =
+        new Dictionary<string, ShipClassProfile>
+        {
+            ["light"]   = new(Cost: 5,  Hull: 50,  Shield: 20),
+            ["medium"]  = new(Cost: 8,  Hull: 80,  Shield: 40),
+            ["heavy"]   = new(Cost: 12, Hull: 150, Shield: 80),
+            ["support"] = new(Cost: 10, Hull: 70,  Shield: 50),
+            ["scout"]   = new(Cost: 4,  Hull: 30,  Shield: 10),
+            ["supply"]  = new(Cost: 9,  Hull: 60,  Shield: 30),
+        };
 }
 
 // ---- Бой ----
@@ -212,6 +248,7 @@ public interface IDomainFactory
 {
     IMatchmakingService CreateLobby(BalanceConfig config);
     IFleetRegistry CreateFleetRegistry();
+    IFleetRegistry CreateFleetRegistry(BalanceConfig config); // реестр, ограниченный капой из конфига
     ICombatService CreateCombat(BalanceConfig config);
     IRatingRepository CreateRating(BalanceConfig config);
     IMatchOrchestrator CreateOrchestrator(IMatchmakingService lobby, IFleetRegistry fleets, ICombatService combat);
