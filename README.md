@@ -11,7 +11,7 @@
 
 ```bash
 cd ~/Study/rts
-dotnet test          # прогон всех тестов (сейчас 24, все зелёные)
+dotnet test          # прогон всех тестов (сейчас 38, все зелёные)
 dotnet build         # просто сборка
 ```
 
@@ -24,6 +24,7 @@ dotnet build         # просто сборка
 | --- | --- | --- |
 | `src/Rts.Auth/Interfaces.cs` | контракт аутентификации: `IPlayerAuthenticator`, хранилища | «дверь» домена: логин игрока с 2FA |
 | `src/Rts.Auth/TwoFactorAuthenticator.cs` | политика двухэтапки | токен устройства совпал → пускаем; нет → код на почту |
+| `src/Rts.Auth/PlayerRegistry.cs` | реестр игроков (кадр 0) | RegisterPlayer → PlayerRegistered; хранит профили in-memory |
 | `src/Rts.Domain/Interfaces.cs` | весь контракт домена: Идентификаторы, лобби, флоты, бой, рейтинг, `BalanceConfig` | единая точка проектирования |
 | `src/Rts.Domain/LobbyService.cs` | очередь и матчи | двое в очереди → матч; Ready; таймаут → сброс |
 | `src/Rts.Domain/FleetRegistry.cs` | хранение флотов | состав можно менять до подтверждения |
@@ -31,7 +32,7 @@ dotnet build         # просто сборка
 | `src/Rts.Domain/MatchOrchestrator.cs` | сборка матча в бой | BothReady + оба флота подтверждены → MatchStarted → CombatService.Start |
 | `src/Rts.Domain/RatingRepository.cs` | рейтинг и статистика | +очки победителю, − проигравшему |
 | `src/Rts.Domain/InMemoryDomainFactory.cs` | сборка сервисов | даёт готовый домен тестам |
-| `tests/Rts.Auth.Tests/` | 8 тестов аутентификации | проверка правила 2FA |
+| `tests/Rts.Auth.Tests/` | 15 тестов аутентификации и регистрации (7+1 база, 7 регистрация) | проверка 2FA и кадра 0 |
 | `tests/Rts.Domain.Tests/` | 23 теста (лобби 6, флоты/бой 6, сборка матча 7, рейтинг 4) | проверка домена |
 
 **Проекты независимы:** `Rts.Auth` знает только свои интерфейсы; `Rts.Domain` — свои.
@@ -104,6 +105,12 @@ dotnet build         # просто сборка
   `−RatingLosePoints`, счётчики побед/поражений растут.
 - Числа — из того же `BalanceConfig` (сейчас +15 / −10).
 
+### 4.6 Регистрация профиля (кадр 0)
+
+- `RegisterPlayer(id, почта)`: создаёт профиль и выдаёт событие `PlayerRegistered`.
+- Пустые id/почта и повторная регистрация того же id — ошибка; `TryGet` находит профиль.
+- Никаких писем/сети: регистрация — чистое хранилище; почтовые коды входа — забота 2FA.
+
 ## 5. Все спорные числа — в одном месте
 
 **`BalanceConfig`** (в `src/Rts.Domain/Interfaces.cs`) — единственная точка правок чисел:
@@ -128,7 +135,7 @@ new BalanceConfig
 
 | Кадр (доска) | События/команды по доске | В каркасе | Статус |
 | --- | --- | --- | --- |
-| 0. Вход и профиль | Register, Вход+2FA → PlayerAuthenticated, Почтовый сервис (ext) | `Rts.Auth`: TwoFactorAuthenticator + IEmailCodeSender | ✅ покрыт (без регистрации профиля — это следующий кусок) |
+| 0. Вход и профиль | Register, Вход+2FA → PlayerAuthenticated, Почтовый сервис (ext) | `Rts.Auth`: TwoFactorAuthenticator + IEmailCodeSender; `PlayerRegistry`: RegisterPlayer → PlayerRegistered | ✅ покрыт |
 | 1. Пользователи и меню | комнаты, вход в комнаты | — | ⛔ не начинали (UI/комнаты) |
 | 2. Конструктор правил | пресеты, валидация (P4, P5) | — | ⛔ ждёт подтверждения хотспотов правил |
 | 3a. Сбор матча | QueueJoined→P1→MatchFound, ReadyUp, ReadyTimeout (P2), дуэли (P3) | `LobbyService`: пара→матч, Ready, таймаут-сброс, Decline | ✅ ядро покрыто |
@@ -168,6 +175,6 @@ new BalanceConfig
 
 1. Слой сборки матча в бой: `AllFleetsConfirmed → MatchStarted → CombatService.Start`
    (сшивает 3b и 4b — сейчас это два отдельных сервиса). — ✅ готово: `MatchOrchestrator`.
-2. Регистрация профилей и хранение (кадр 0: RegisterPlayer → PlayerRegistered).
+2. Регистрация профилей и хранение (кадр 0: RegisterPlayer → PlayerRegistered). — ✅ готово: `PlayerRegistry`.
 3. Метеориты/классы кораблей — после подтверждения чисел владельцем.
 4. Кап флота 100 очков (P6) — как только подтвердят формулу очков за класс.

@@ -66,3 +66,28 @@ public interface IPlayerAuthenticator
     /// <summary>Второй этап: игрок ввёл код из письма. При успехе запоминает токен устройства.</summary>
     AuthResult Confirm(string playerId, string code, string deviceToken);
 }
+
+// ---- Регистрация профиля (кадр 0: Register → PlayerRegistered) ----
+
+/// <summary>Профиль зарегистрированного игрока (в хранилище).</summary>
+public record PlayerProfile(string PlayerId, string Email);
+
+/// <summary>Событие регистрации нового профиля.</summary>
+public record PlayerRegistered(string PlayerId, string Email);
+
+/// <summary>
+/// Реестр игроков (кадр «Вход и профиль»): RegisterPlayer создаёт профиль и выдаёт событие
+/// PlayerRegistered. Без сети/БД/реальной почты: за интерфейсом — память или БД.
+/// Почтовые коды входа — забота IPlayerAuthenticator, регистрация письма не отправляет.
+/// </summary>
+public interface IPlayerRegistry
+{
+    /// <summary>
+    /// Зарегистрировать нового игрока. Пустые идентификатор/почта — ошибка;
+    /// повторная регистрация занятого идентификатора — ошибка.
+    /// </summary>
+    PlayerRegistered RegisterPlayer(string playerId, string email);
+
+    /// <summary>Профиль по идентификатору или null, если игрок не зарегистрирован.</summary>
+    PlayerProfile? TryGet(string playerId);
+}
