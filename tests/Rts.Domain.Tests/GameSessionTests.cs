@@ -413,6 +413,40 @@ public class GameSessionTests
     }
 
     [Fact]
+    public void Зеркальный_размен_по_победе_на_лейн_даёт_ничью_и_рейтинг_0_0()
+    {
+        var session = NewSession();
+        // зеркальные силы: по слабому против сильного в каждом лэйне
+        session.SetFleet(P1, [Ship("p1-s", "scout")]); // лейн 1: A-скаут против B-тяжёлого
+        session.SetFleet(P2, [Ship("p2-h", "heavy")]); // лейн 2: A-тяжёлый против B-скаута
+        session.SetFleet(P3, [Ship("p3-h", "heavy")]);
+        session.SetFleet(P4, [Ship("p4-s", "scout")]);
+        foreach (var player in new[] { P1, P2, P3, P4 }) session.ConfirmFleet(player);
+        foreach (var player in new[] { P1, P2, P3, P4 })
+        {
+            var isScout = player == P1 || player == P4;
+            var target = isScout ? "s" : "h"; // каждому — его корабль
+            session.SetPath(player, S($"{player.Value}-{target}"), [new Waypoint(Cfg.BasePoints[BaseId.Central])]);
+        }
+
+        TickUntil(session, () => session.IsOver, 30);
+
+        // каждая сторона потратила по одному лэйну («одинаковое уничтожение»), живые остались у обеих
+        Assert.Equal(SessionOutcome.Draw, session.Outcome);
+        Assert.Null(session.Winner);
+        var state = session.GetState();
+        Assert.True(state.Ships.Count(s => s.Alive) == 2, "после размена жив один корабль с каждой стороны");
+        Assert.True(state.Ships.Count(s => (s.Player == P1 || s.Player == P4) && !s.Alive) == 2, "погибли оба скаута");
+
+        // ничья: рейтинг не пишется — у всех нули (дефолт «0/0»)
+        foreach (var player in new[] { P1, P2, P3, P4 })
+        {
+            var rating = session.Ratings.GetOrCreate(player);
+            Assert.True(rating.Points == 0 && rating.Wins == 0 && rating.Losses == 0, $"у {player.Value} 0/0");
+        }
+    }
+
+    [Fact]
     public void После_исхода_сессия_замерзает_и_рейтинг_не_дописывается()
     {
         var session = NewSession();
