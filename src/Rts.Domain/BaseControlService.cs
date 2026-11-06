@@ -17,6 +17,7 @@ public sealed class BaseControlService : IBaseControlService
 {
     private static readonly Team TeamA = new(0);
     private static readonly Team TeamB = new(1);
+    private static readonly BaseId[] Bases = [BaseId.HomeA, BaseId.Central, BaseId.HomeB];
 
     private const int BaseCount = 3; // BaseId: HomeA, Central, HomeB
 
@@ -217,7 +218,7 @@ public sealed class BaseControlService : IBaseControlService
         _winner = team;
     }
 
-    private static List<BaseId> AllBases() => new() { BaseId.HomeA, BaseId.Central, BaseId.HomeB };
+    private static IEnumerable<BaseId> AllBases() => Bases;
 
     private List<Team> TeamsInZone(BaseId baseId) =>
         _presence.TryGetValue(baseId, out var perTeam) ? perTeam.Keys.ToList() : new List<Team>();
