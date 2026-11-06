@@ -1,62 +1,111 @@
 namespace Rts.Domain;
 
-public sealed class Lobby
-{
-    private Match _match;
-    private TimeSpan _waiting;
-    private bool _closed;
-    public Match Match => _match;
-    public bool IsClosed => _closed;
-
-    public Lobby(Match match) { ArgumentNullException.ThrowIfNull(match); _match = match; }
-    public Match Ready(PlayerId player)
-    {
-        if (_closed || (player != _match.A && player != _match.B)) throw new InvalidOperationException("Игрок не состоит в матче лобби");
-        _match = _match with { ReadyA = _match.ReadyA || _match.A == player, ReadyB = _match.ReadyB || _match.B == player };
-        _match = _match with { State = _match.ReadyA && _match.ReadyB ? ReadyState.BothReady : ReadyState.WaitingReady };
-        return _match;
-    }
-    public bool Advance(TimeSpan elapsed, TimeSpan timeout)
-    {
-        if (elapsed < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(elapsed));
-        if (_closed || _match.State != ReadyState.WaitingReady) return false;
-        _waiting += elapsed;
-        if (_waiting < timeout) return false;
-        _closed = true;
-        _match = _match with { State = ReadyState.TimedOut };
-        return true;
-    }
-    public void Decline() => _closed = true;
-}
-
-public sealed class LobbyService : IMatchmakingService
+/// <summary>
+/// Очередь лобби in-memory. Двое в очереди → матч; Ready от обоих → BothReady;
+/// ждущий Ready свыше таймаута → ReadyTimeout, лобби сбрасывается (правило v4).
+/// </summary>
+public class LobbyService : IMatchmakingService
 {
     private readonly BalanceConfig _config;
     private readonly List<PlayerId> _queue = new();
-    private readonly List<Lobby> _lobbies = new();
+    private readonly List<LobbyEntry> _entries = new();
     private int _nextMatchNumber;
-    public LobbyService(BalanceConfig config) { ArgumentNullException.ThrowIfNull(config); _config = config; }
+
+    private sealed class LobbyEntry
+    {
+        public Match Match { get; set; } = null!;
+        public TimeSpan WaitingElapsed { get; set; }
+        public bool Closed { get; set; }
+    }
+
+    public LobbyService(BalanceConfig config) => _config = config;
 
     public Match? Join(PlayerId player)
     {
         var existing = TryGetMatch(player);
-        if (existing is not null) return existing;
-        if (_queue.Contains(player)) return null;
+        if (existing is not null)
+        {
+            return existing;
+        }
+
         _queue.Add(player);
-        if (_queue.Count < 2) return null;
-        var a = _queue[0]; var b = _queue[1]; _queue.RemoveRange(0, 2);
-        var lobby = new Lobby(new Match(new MatchId($"m{++_nextMatchNumber}"), a, b, ReadyState.WaitingReady, false, false));
-        _lobbies.Add(lobby);
-        return lobby.Match;
+        if (_queue.Count < 2)
+        {
+            return null;
+        }
+
+        var a = _queue[0];
+        var b = _queue[1];
+        _queue.RemoveRange(0, 2);
+        _nextMatchNumber++;
+        var entry = new LobbyEntry
+        {
+            Match = new Match(
+                new MatchId($"m{_nextMatchNumber}"),
+                a,
+                b,
+                ReadyState.WaitingReady,
+                ReadyA: false,
+                ReadyB: false),
+        };
+        _entries.Add(entry);
+        return entry.Match;
     }
-    public Match? TryGetMatch(PlayerId player) => _lobbies.FirstOrDefault(l => !l.IsClosed && (l.Match.A == player || l.Match.B == player))?.Match;
-    public Match Ready(PlayerId player) => _lobbies.FirstOrDefault(l => !l.IsClosed && (l.Match.A == player || l.Match.B == player))?.Ready(player) ?? throw new InvalidOperationException("Игрок не состоит в матче лобби");
-    public void Decline(PlayerId player) { var lobby = _lobbies.FirstOrDefault(l => !l.IsClosed && (l.Match.A == player || l.Match.B == player)); if (lobby is not null) lobby.Decline(); }
+
+    public Match? TryGetMatch(PlayerId player) =>
+        _entries.FirstOrDefault(e =>
+                !e.Closed && (e.Match.A == player || e.Match.B == player))?
+            .Match;
+
+    public Match Ready(PlayerId player)
+    {
+        var entry = _entries.FirstOrDefault(e =>
+                !e.Closed && (e.Match.A == player || e.Match.B == player))
+            ?? throw new InvalidOperationException("Игрок не состоит в матче лобби");
+
+        var readyA = entry.Match.ReadyA || entry.Match.A == player;
+        var readyB = entry.Match.ReadyB || entry.Match.B == player;
+        var state = readyA && readyB ? ReadyState.BothReady : ReadyState.WaitingReady;
+        entry.Match = entry.Match with { ReadyA = readyA, ReadyB = readyB, State = state };
+        return entry.Match;
+    }
+
+    public void Decline(PlayerId player)
+    {
+        var entry = _entries.FirstOrDefault(e =>
+            !e.Closed && (e.Match.A == player || e.Match.B == player));
+        if (entry is null)
+        {
+            return;
+        }
+
+        entry.Closed = true;
+        _queue.Remove(entry.Match.A);
+        _queue.Remove(entry.Match.B);
+    }
+
     public IReadOnlyList<Match> Tick(TimeSpan elapsed)
     {
-        if (elapsed < TimeSpan.Zero) throw new ArgumentOutOfRangeException(nameof(elapsed));
-        var result = new List<Match>();
-        foreach (var lobby in _lobbies.Where(l => !l.IsClosed && l.Advance(elapsed, _config.ReadyTimeout))) result.Add(lobby.Match);
-        return result;
+        var timedOut = new List<Match>();
+
+        foreach (var entry in _entries.Where(e => e.Closed is false))
+        {
+            if (entry.Match.State != ReadyState.WaitingReady)
+            {
+                continue;
+            }
+
+            entry.WaitingElapsed += elapsed;
+            if (entry.WaitingElapsed >= _config.ReadyTimeout)
+            {
+                entry.Closed = true;
+                var timedOutMatch = entry.Match with { State = ReadyState.TimedOut };
+                timedOut.Add(timedOutMatch);
+                _queue.Remove(timedOutMatch.A);
+                _queue.Remove(timedOutMatch.B);
+            }
+        }
+
+        return timedOut;
     }
 }

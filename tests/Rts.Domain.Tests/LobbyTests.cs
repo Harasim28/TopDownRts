@@ -3,7 +3,27 @@ namespace Rts.Domain.Tests;
 /// <summary>Числа лобби — свой конфиг (дефолты завтрашних правок не трогают тесты).</summary>
 internal static class TestBalance
 {
-    public static readonly BalanceConfig Balance = new(TimeSpan.FromSeconds(30), 10, 6, 15, 10);
+    public static readonly BalanceConfig Balance = new()
+    {
+        ReadyTimeout = TimeSpan.FromSeconds(30),
+        BaseDamagePerTick = 10,
+        ShieldAbsorbsPerTick = 6,
+        RatingWinPoints = 15,
+        RatingLosePoints = 10,
+        // --- кадр 3b: классы кораблей и капа закупа (фиксация владельца 05.11: 6 классов;
+        //     ЧИСЛА ниже — дефолты, НЕ подтверждены владельцем, правки меняют только эти строки) ---
+        PurchaseCapPoints = 100,
+        ShipClasses = new Dictionary<string, ShipClassProfile>
+        {
+            ["light"]   = new(Cost: 5,  Hull: 50,  Shield: 20),
+            ["medium"]  = new(Cost: 8,  Hull: 80,  Shield: 40),
+            ["heavy"]   = new(Cost: 12, Hull: 150, Shield: 80),
+            ["support"] = new(Cost: 10, Hull: 70,  Shield: 50),
+            ["scout"]   = new(Cost: 4,  Hull: 30,  Shield: 10),
+            ["supply"]  = new(Cost: 9,  Hull: 60,  Shield: 30),
+        },
+        UnknownClassProfile = new ShipClassProfile(Cost: 10, Hull: 100, Shield: 50),
+    };
 }
 
 internal static class TestDomain

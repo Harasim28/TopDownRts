@@ -52,7 +52,11 @@ public class RatingTests
     [Fact]
     public void Свои_числа_конфига_в_начислении()
     {
-        var rating = TestDomain.Factory.CreateRating(new BalanceConfig(ratingWinPoints: 7, ratingLosePoints: 3));
+        var rating = TestDomain.Factory.CreateRating(new BalanceConfig
+        {
+            RatingWinPoints = 7,
+            RatingLosePoints = 3,
+        });
 
         var (winner, loser) = rating.RecordOutcome(
             new BattleOutcome(new PlayerId("x"), new PlayerId("y")));
